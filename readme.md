@@ -27,7 +27,7 @@ Source video: https://www.youtube.com/watch?v=lwTqv3m1SSs
 
 <audio controls preload="metadata">
 	<source src="output/card_009/audio.mp3" type="audio/mpeg">
-	Your browser does not support the audio element.
+	Your browser does not support the audio element. <a href="output/card_009/audio.mp3">Open the audio file</a>.
 </audio>
 
 ### Text
