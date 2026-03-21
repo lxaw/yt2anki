@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# macOS
+.DS_Store
+
+# App bundles
+*.app
+
+# Output folder (ignore everything by default)
+output/*
+
+# But keep one example card
+!output/card_009/
+!output/card_009/audio.mp3
+!output/card_009/frame.jpg
+!output/card_009/text.txt
+
+# Keep metadata optional (comment out if not needed)
+!output/metadata.json
