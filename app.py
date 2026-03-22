@@ -324,6 +324,13 @@ HTML = """
             <div class="lbl">Language:</div>
             <input class="field" type="text" id="lang" placeholder="auto" style="width:100px">
           </div>
+          <div>
+            <div class="lbl">Quality:</div>
+            <select class="field" id="quality" style="padding:3px 6px;width:100px">
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+            </select>
+          </div>
           <div class="grow">
             <div class="lbl">Output Folder:</div>
             <input class="field" type="text" id="output" value="output">
@@ -461,7 +468,8 @@ function startJob() {
   const lang = document.getElementById('lang').value.trim();
   const output = document.getElementById('output').value.trim() || 'output';
   const cookies = document.getElementById('cookies').value.trim();
-  pywebview.api.start_job(url, lang, output, cookies);
+  const quality = document.getElementById('quality').value;
+  pywebview.api.start_job(url, lang, output, cookies, quality);
   pollStatus();
 }
 
@@ -488,6 +496,9 @@ function pollStatus() {
       const pct = Math.round((data.progress / data.total) * 100);
       document.getElementById('progressBar').style.width = pct + '%';
       document.getElementById('progressText').textContent = pct + '%';
+    } else if (data.download_pct > 0) {
+      document.getElementById('progressBar').style.width = data.download_pct + '%';
+      document.getElementById('progressText').textContent = 'Downloading: ' + data.download_pct + '%';
     }
     if (data.done || data.error || !data.running) {
       document.getElementById('startBtn').disabled = false;
@@ -674,33 +685,41 @@ class Api:
 
     # ── Generate tab ──────────────────────────────────────────────
 
-    def start_job(self, url, lang, output, cookies=""):
+    def start_job(self, url, lang, output, cookies="", quality="720"):
         if self._status["running"]:
             return
-        self._output_dir = os.path.abspath(output)
+        self._output_dir = os.path.abspath(os.path.expanduser(output))
         self._cancelled = False
         self._status = {
             "running": True, "progress": 0, "total": 0,
             "messages": [], "done": False, "error": None,
+            "download_pct": 0,
         }
         lang = lang if lang else None
         cookies_path = cookies.strip() if cookies else None
+        max_height = int(quality) if quality else 720
 
         def worker():
             try:
+                import re as _re
+
                 def cb(current, total, msg):
                     if self._cancelled:
                         self._kill_children()
                         raise InterruptedError("Cancelled.")
                     self._status["progress"] = current
                     self._status["total"] = total
+                    # Parse yt-dlp download percentage
+                    pct_match = _re.search(r"(\d+(?:\.\d+)?)%", msg)
+                    if pct_match and "[download]" in msg:
+                        self._status["download_pct"] = float(pct_match.group(1))
                     self._status["messages"].append(
                         f"[{current}/{total}] {msg[:80]}" if total > 0 else msg
                     )
                     if len(self._status["messages"]) > 500:
                         self._status["messages"] = self._status["messages"][-300:]
 
-                _, num = process_video(url, self._output_dir, lang=lang, progress_callback=cb, cookies_path=cookies_path)
+                _, num = process_video(url, self._output_dir, lang=lang, progress_callback=cb, cookies_path=cookies_path, max_height=max_height)
                 self._status["messages"].append(f"\nDone! {num} cards saved.")
                 self._status["done"] = True
             except InterruptedError:
@@ -750,7 +769,7 @@ class Api:
     # ── Anki tab ──────────────────────────────────────────────────
 
     def anki_load_folder(self, folder):
-        folder = os.path.abspath(folder)
+        folder = os.path.abspath(os.path.expanduser(folder))
         cards = scan_card_folders(folder)
         source_url = get_source_url(folder)
         return {
@@ -773,7 +792,7 @@ class Api:
 
         def worker():
             try:
-                base_folder_abs = os.path.abspath(base_folder)
+                base_folder_abs = os.path.abspath(os.path.expanduser(base_folder))
                 source_url = get_source_url(base_folder_abs)
 
                 # Select language-specific helpers

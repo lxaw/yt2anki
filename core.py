@@ -74,32 +74,63 @@ def _ffmpeg():
     return _get_bin("ffmpeg")
 
 
-def run(cmd, progress_callback=None, **kwargs):
+def run(cmd, progress_callback=None, timeout=120, **kwargs):
     """Run a subprocess command and return its output.
 
     If progress_callback is provided, streams stderr lines to it in real time
     (useful for yt-dlp download progress).
+    timeout: max seconds to wait (default 120, use 0 for no limit).
     """
     if progress_callback is None:
-        result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=timeout or None, **kwargs)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}")
         if result.returncode != 0:
             raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{result.stderr}")
         return result.stdout.strip()
 
-    # Streaming mode: read stderr live for progress updates
+    # Streaming mode: read stderr live for progress updates.
+    # Use a watchdog thread to kill the process if it hangs (the line
+    # iterator blocks, so an in-loop deadline check won't fire).
+    import threading, time as _time
+
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, **kwargs
     )
     stderr_lines = []
+    last_activity = [_time.monotonic()]
+    # Kill if no stderr output for 45s (stuck) or total timeout exceeded
+    stall_limit = 45
+    hard_deadline = _time.monotonic() + (timeout if timeout else 600)
+    timed_out = [False]
+
+    def watchdog():
+        while proc.poll() is None:
+            _time.sleep(2)
+            now = _time.monotonic()
+            if now > hard_deadline or (now - last_activity[0]) > stall_limit:
+                timed_out[0] = True
+                proc.kill()
+                return
+
+    wd = threading.Thread(target=watchdog, daemon=True)
+    wd.start()
+
     for line in proc.stderr:
+        last_activity[0] = _time.monotonic()
         line = line.rstrip()
         stderr_lines.append(line)
-        # yt-dlp progress lines look like: [download]  45.3% of 123.45MiB at 2.34MiB/s ETA 00:30
         if line.startswith("[download]") or line.startswith("[youtube]"):
             progress_callback(0, 0, line)
     stdout = proc.stdout.read()
     proc.wait()
+    wd.join(timeout=1)
+
+    if timed_out[0]:
+        raise RuntimeError(f"Command timed out (stalled or exceeded {timeout}s): {' '.join(cmd)}")
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}\n" + "\n".join(stderr_lines))
     return stdout.strip()
@@ -164,21 +195,21 @@ def get_video_info(url, cookies_path=None):
     # Try with cookies + EJS solver (most reliable)
     last_err = None
     try:
-        out = run(base + ejs + cookies + [url])
+        out = run(base + ejs + cookies + [url], timeout=30)
         return json.loads(out)
     except RuntimeError as e:
         last_err = e
 
     # Fallback: try without EJS (some videos don't need it)
     try:
-        out = run(base + cookies + [url])
+        out = run(base + cookies + [url], timeout=30)
         return json.loads(out)
     except RuntimeError as e:
         last_err = e
 
     # Last resort: no cookies at all
     try:
-        out = run(base + ejs + [url])
+        out = run(base + ejs + [url], timeout=30)
         return json.loads(out)
     except RuntimeError as e:
         last_err = e
@@ -239,7 +270,7 @@ def get_available_languages(info):
     return langs
 
 
-def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None, progress_callback=None):
+def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None, progress_callback=None, max_height=720):
     """Download video and subtitle file. Returns (video_path, srt_path)."""
     video_template = os.path.join(tmpdir, "video.%(ext)s")
     ffmpeg_dir = os.path.dirname(_ffmpeg())
@@ -250,22 +281,24 @@ def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None, progr
         ejs = _ejs_args()
         cookies = _cookie_args(cookies_path)
         cb = progress_callback if stream_progress else None
+        # Downloads can take a while; info/sub fetches should be fast
+        t = 300 if stream_progress else 60
 
         last_err = None
         try:
-            run(base + ejs + cookies + args, progress_callback=cb)
+            run(base + ejs + cookies + args, progress_callback=cb, timeout=t)
             return
         except RuntimeError as e:
             last_err = e
 
         try:
-            run(base + cookies + args, progress_callback=cb)
+            run(base + cookies + args, progress_callback=cb, timeout=t)
             return
         except RuntimeError as e:
             last_err = e
 
         try:
-            run(base + ejs + args, progress_callback=cb)
+            run(base + ejs + args, progress_callback=cb, timeout=t)
             return
         except RuntimeError as e:
             last_err = e
@@ -274,7 +307,7 @@ def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None, progr
 
     # Download video first (no subs) — stream progress to UI
     ytdlp_run([
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "-f", f"bestvideo[ext=mp4][height<={max_height}]+bestaudio[ext=m4a]/best[ext=mp4][height<={max_height}]/best[height<={max_height}]/best",
         "--merge-output-format", "mp4",
         "--no-write-subs",
         "-o", video_template,
@@ -460,7 +493,7 @@ def extract_cards(video_path, entries, output_dir, progress_callback=None):
             progress_callback(i, total, text)
 
 
-def process_video(url, output_dir, lang=None, progress_callback=None, cookies_path=None):
+def process_video(url, output_dir, lang=None, progress_callback=None, cookies_path=None, max_height=720):
     """Full pipeline: download, parse captions, extract cards.
 
     progress_callback(current, total, message) is called at each stage.
@@ -482,7 +515,7 @@ def process_video(url, output_dir, lang=None, progress_callback=None, cookies_pa
 
     with tempfile.TemporaryDirectory() as tmpdir:
         update(0, 0, "Downloading video and subtitles...")
-        video_path, srt_path = download_video_and_subs(url, tmpdir, lang_code, is_auto, cookies_path=cookies_path, progress_callback=update)
+        video_path, srt_path = download_video_and_subs(url, tmpdir, lang_code, is_auto, cookies_path=cookies_path, progress_callback=update, max_height=max_height)
 
         update(0, 0, "Parsing captions...")
         entries = parse_srt(srt_path)

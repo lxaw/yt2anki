@@ -2,7 +2,7 @@
 
 Turn any captioned YouTube video into study-ready flashcard assets — one folder per caption line, each containing an audio clip, a video frame, and the subtitle text. Then upload directly to Anki.
 
-![YouTube to Flashcard app](example_screenshot.png)
+![Downloading video to cards](readme_assets/screenshots/downloading.png)
 
 ## What It Does
 
@@ -23,6 +23,16 @@ card_001/
    - Dictionary lookups (German or Japanese)
    - Word-level TTS audio
 
+## Screenshots
+
+### Searching through downloaded cards
+
+![Search](readme_assets/screenshots/search.png)
+
+### Uploading to Anki
+
+![Upload to Anki](readme_assets/screenshots/upload_to_anki.png)
+
 ## Supported Languages
 
 | Language | EN Dictionary | Native Dictionary | TTS Voice |
@@ -36,14 +46,14 @@ Source: [Resident Evil Requiem #09](https://www.youtube.com/watch?v=lwTqv3m1SSs)
 
 **Frame:**
 
-![Card 008 frame](output/card_008/frame.jpg)
+![Card 008 frame](readme_assets/output/card_008/frame.jpg)
 
 **Text:**
 ```
 gerade glaube ich hier ein bisschen
 ```
 
-**Audio:** [Listen to audio clip](output/card_008/audio.mp3)
+**Audio:** [Listen to audio clip](readme_assets/output/card_008/audio.mp3)
 
 ## Requirements
 
@@ -73,6 +83,8 @@ pip install pywebview psutil
 python app.py
 ```
 
+Or double-click the `YouTube to Flashcard.app` if you have the built app.
+
 ### Or use the CLI
 
 ```bash
@@ -90,6 +102,7 @@ python youtube_to_cards.py "https://www.youtube.com/watch?v=VIDEO_ID" -o my_card
 ## Notes
 
 - Only works with videos that have captions (manual or auto-generated). Videos without captions will show an error.
+- Video quality can be set to 480p or 720p in the app to balance download speed and quality.
 - If YouTube blocks the download with a bot check, make sure you are logged into YouTube in Chrome. The app automatically uses Chrome cookies for authentication.
 - As a fallback, you can export cookies via the "Get cookies.txt LOCALLY" browser extension and load them in the app.
 - Auto-generated captions are automatically de-duplicated to remove repeated fragments.

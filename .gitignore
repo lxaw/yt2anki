@@ -19,12 +19,5 @@ dist/
 cookies.txt
 *.cookies
 
-# Output folder (ignore everything by default)
-output/metadata.json
-output/*
-
-# But keep one example card
-!output/card_008/
-!output/card_008/audio.mp3
-!output/card_008/frame.jpg
-!output/card_008/text.txt
+# Output folder (top-level only)
+/output/
