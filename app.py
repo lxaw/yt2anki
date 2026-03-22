@@ -43,15 +43,21 @@ from anki_connect import (
     get_deck_names,
     create_deck,
     ensure_german_model,
+    ensure_japanese_model,
     add_note,
 )
 from german_helpers import (
     scan_card_folders,
     search_cards,
     get_source_url,
-    lookup_english,
+    lookup_english as de_lookup_english,
     lookup_german,
-    generate_word_audio,
+    generate_word_audio as de_generate_word_audio,
+)
+from japanese_helpers import (
+    lookup_english as ja_lookup_english,
+    lookup_japanese,
+    generate_word_audio as ja_generate_word_audio,
 )
 
 HTML = """
@@ -323,6 +329,16 @@ HTML = """
             <input class="field" type="text" id="output" value="output">
           </div>
         </div>
+        <div class="row" style="margin-top:8px">
+          <div class="grow">
+            <div class="lbl">Cookies File: <span style="font-weight:normal;color:#666">(optional — needed if YouTube blocks the download)</span></div>
+            <input class="field" type="text" id="cookies" placeholder="path to cookies.txt (leave empty to try without)">
+          </div>
+          <div>
+            <div class="lbl">&nbsp;</div>
+            <button onclick="browseCookies()">Browse...</button>
+          </div>
+        </div>
       </div>
 
       <div class="buttons">
@@ -373,6 +389,19 @@ HTML = """
           <span id="anki-count">0 cards</span>
           <button onclick="ankiSelectAll()">Select All</button>
           <button onclick="ankiSelectNone()">Select None</button>
+        </div>
+      </div>
+
+      <div class="groupbox" style="margin-top:10px">
+        <div class="groupbox-title">Language</div>
+        <div class="row" style="margin-top:4px">
+          <div>
+            <div class="lbl">Card Language:</div>
+            <select class="field" id="anki-lang" style="padding:3px 6px;">
+              <option value="de">German (de)</option>
+              <option value="ja">Japanese (ja)</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -431,7 +460,8 @@ function startJob() {
   document.getElementById('progressText').textContent = '';
   const lang = document.getElementById('lang').value.trim();
   const output = document.getElementById('output').value.trim() || 'output';
-  pywebview.api.start_job(url, lang, output);
+  const cookies = document.getElementById('cookies').value.trim();
+  pywebview.api.start_job(url, lang, output, cookies);
   pollStatus();
 }
 
@@ -442,6 +472,12 @@ function cancelJob() {
 }
 
 function openFolder() { pywebview.api.open_output(); }
+
+function browseCookies() {
+  pywebview.api.browse_file('cookies.txt').then(path => {
+    if (path) document.getElementById('cookies').value = path;
+  });
+}
 
 function pollStatus() {
   pywebview.api.get_status().then(data => {
@@ -591,7 +627,8 @@ function ankiUpload() {
   document.getElementById('anki-log').textContent = 'Starting upload...\\n';
 
   const folder = document.getElementById('anki-folder').value.trim();
-  pywebview.api.anki_upload(deck, targetPhrase, selectedCards, folder);
+  const lang = document.getElementById('anki-lang').value;
+  pywebview.api.anki_upload(deck, targetPhrase, selectedCards, folder, lang);
   pollAnkiStatus();
 }
 
@@ -637,7 +674,7 @@ class Api:
 
     # ── Generate tab ──────────────────────────────────────────────
 
-    def start_job(self, url, lang, output):
+    def start_job(self, url, lang, output, cookies=""):
         if self._status["running"]:
             return
         self._output_dir = os.path.abspath(output)
@@ -647,6 +684,7 @@ class Api:
             "messages": [], "done": False, "error": None,
         }
         lang = lang if lang else None
+        cookies_path = cookies.strip() if cookies else None
 
         def worker():
             try:
@@ -662,7 +700,7 @@ class Api:
                     if len(self._status["messages"]) > 500:
                         self._status["messages"] = self._status["messages"][-300:]
 
-                _, num = process_video(url, self._output_dir, lang=lang, progress_callback=cb)
+                _, num = process_video(url, self._output_dir, lang=lang, progress_callback=cb, cookies_path=cookies_path)
                 self._status["messages"].append(f"\nDone! {num} cards saved.")
                 self._status["done"] = True
             except InterruptedError:
@@ -695,6 +733,16 @@ class Api:
     def get_status(self):
         return self._status
 
+    def browse_file(self, filename_hint=""):
+        result = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=("Text files (*.txt)", "All files (*.*)"),
+        )
+        if result:
+            return result[0]
+        return None
+
     def open_output(self):
         if os.path.isdir(self._output_dir):
             subprocess.Popen(["open", self._output_dir])
@@ -717,7 +765,7 @@ class Api:
     def anki_create_deck(self, name):
         return create_deck(name)
 
-    def anki_upload(self, deck_name, target_phrase, selected_cards, base_folder):
+    def anki_upload(self, deck_name, target_phrase, selected_cards, base_folder, lang="de"):
         self._anki_upload_status = {"messages": [], "done": False, "error": None}
 
         def log(msg):
@@ -728,30 +776,39 @@ class Api:
                 base_folder_abs = os.path.abspath(base_folder)
                 source_url = get_source_url(base_folder_abs)
 
-                log("Ensuring note type exists...")
-                model_name = ensure_german_model()
+                # Select language-specific helpers
+                is_ja = lang == "ja"
+                if is_ja:
+                    model_name = ensure_japanese_model()
+                    native_field = "Dictionary Entry (Japanese)"
+                    fn_lookup_en = ja_lookup_english
+                    fn_lookup_native = lookup_japanese
+                    fn_word_audio = ja_generate_word_audio
+                else:
+                    model_name = ensure_german_model()
+                    native_field = "Dictionary Entry (German)"
+                    fn_lookup_en = de_lookup_english
+                    fn_lookup_native = lookup_german
+                    fn_word_audio = de_generate_word_audio
+
                 log(f"Using model: {model_name}")
 
                 has_target = bool(target_phrase)
-
                 en_def = ""
-                de_def = ""
+                native_def = ""
                 word_audio_path = None
 
                 if has_target:
-                    # Look up dictionary definitions for target phrase (once)
                     log(f"Looking up '{target_phrase}' in dictionaries...")
-                    en_def = lookup_english(target_phrase)
+                    en_def = fn_lookup_en(target_phrase)
                     log(f"  EN: {en_def[:80] if en_def else '(not found)'}")
-                    de_def = lookup_german(target_phrase)
-                    log(f"  DE: {de_def[:80] if de_def else '(not found)'}")
-
-                    # Generate word audio (once)
+                    native_def = fn_lookup_native(target_phrase)
+                    log(f"  Native: {native_def[:80] if native_def else '(not found)'}")
                     log(f"Generating word audio for '{target_phrase}'...")
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     if has_target:
-                        word_audio_path = generate_word_audio(
+                        word_audio_path = fn_word_audio(
                             target_phrase,
                             os.path.join(tmpdir, "word.mp3"),
                         )
@@ -764,7 +821,6 @@ class Api:
                     for i, card in enumerate(selected_cards, 1):
                         card_folder = card["folder"]
                         sentence = card["text"]
-                        # If no target phrase, use the sentence itself
                         effective_target = target_phrase if has_target else sentence
 
                         log(f"[{i}/{total}] Uploading: {sentence[:60]}...")
@@ -776,14 +832,13 @@ class Api:
                             "Sentence Audio": "",
                             "Word Audio": "",
                             "Dictionary Entry (English)": en_def,
-                            "Dictionary Entry (German)": de_def,
+                            native_field: native_def,
                             "Source": source_url,
                         }
 
                         audio_files = []
                         picture_files = []
 
-                        # Sentence audio
                         audio_path = os.path.join(card_folder, "audio.mp3")
                         if os.path.isfile(audio_path):
                             audio_files.append({
@@ -792,7 +847,6 @@ class Api:
                                 "fields": ["Sentence Audio"],
                             })
 
-                        # Word audio (only if target phrase was provided)
                         if has_target and word_audio_path and os.path.isfile(word_audio_path):
                             safe_phrase = target_phrase.replace(" ", "_")[:30]
                             audio_files.append({
@@ -801,7 +855,6 @@ class Api:
                                 "fields": ["Word Audio"],
                             })
 
-                        # Image
                         img_path = os.path.join(card_folder, "frame.jpg")
                         if os.path.isfile(img_path):
                             picture_files.append({

@@ -85,6 +85,49 @@ def ensure_german_model(model_name="GermanYouTubeCard"):
     return model_name
 
 
+def ensure_japanese_model(model_name="JapaneseYouTubeCard"):
+    """Create the Japanese note type if it doesn't exist. Returns model name."""
+    existing = get_model_names()
+    if model_name in existing:
+        return model_name
+
+    invoke(
+        "createModel",
+        modelName=model_name,
+        inOrderFields=[
+            "Sentence",
+            "Image",
+            "Target Phrase",
+            "Sentence Audio",
+            "Word Audio",
+            "Dictionary Entry (English)",
+            "Dictionary Entry (Japanese)",
+            "Source",
+        ],
+        cardTemplates=[
+            {
+                "Name": "Card 1",
+                "Front": (
+                    '<div style="font-size:24px;text-align:center;">{{Sentence}}</div>'
+                    "<br>{{Image}}"
+                    "<br>{{Sentence Audio}}"
+                ),
+                "Back": (
+                    '{{FrontSide}}<hr id="answer">'
+                    '<div style="font-size:20px;text-align:center;">{{Target Phrase}}</div>'
+                    "<br>{{Word Audio}}"
+                    '<div style="font-size:16px;margin-top:10px;">'
+                    "<b>EN:</b> {{Dictionary Entry (English)}}<br>"
+                    "<b>JP:</b> {{Dictionary Entry (Japanese)}}"
+                    "</div>"
+                    '<div style="font-size:12px;color:gray;margin-top:8px;">{{Source}}</div>'
+                ),
+            }
+        ],
+    )
+    return model_name
+
+
 def add_note(deck_name, model_name, fields, audio_files=None, picture_files=None):
     """Add a note to Anki.
 

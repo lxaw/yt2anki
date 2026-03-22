@@ -73,10 +73,63 @@ def run(cmd, **kwargs):
     return result.stdout.strip()
 
 
-def get_video_info(url):
-    """Fetch video metadata via yt-dlp."""
-    out = run([_ytdlp(), "--dump-json", "--no-download", url])
-    return json.loads(out)
+def _cookie_args():
+    """Return --cookies args if a cookies.txt file exists next to this module."""
+    # Look for cookies.txt in the same directory as this file (or CWD)
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"),
+        os.path.join(os.getcwd(), "cookies.txt"),
+        os.path.expanduser("~/cookies.txt"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return ["--cookies", path]
+    return []
+
+
+_BOT_PHRASES = ("Sign in to confirm", "bot", "Login required", "cookies")
+
+
+def get_video_info(url, cookies_path=None):
+    """Fetch video metadata via yt-dlp.
+
+    Tries multiple YouTube clients to bypass bot detection without needing login.
+    Falls back to cookies_path (or auto-detected cookies.txt) if all anonymous attempts fail.
+    """
+    ytdlp = _ytdlp()
+    base = [ytdlp, "--dump-json", "--no-download"]
+
+    # If user provided a cookies file, use it directly and skip anonymous attempts
+    if cookies_path and os.path.isfile(cookies_path):
+        out = run(base + ["--cookies", cookies_path, url])
+        return json.loads(out)
+
+    # Try clients that bypass bot detection without cookies (in order of reliability)
+    clients = ["android", "ios", "tv", "mweb", "web"]
+    last_err = None
+    for client in clients:
+        try:
+            out = run(base + ["--extractor-args", f"youtube:player_client={client}", url])
+            return json.loads(out)
+        except RuntimeError as e:
+            last_err = e
+            continue
+
+    # All anonymous clients failed — try auto-detected cookies.txt
+    cookie_args = _cookie_args()
+    if cookie_args:
+        try:
+            out = run(base + cookie_args + [url])
+            return json.loads(out)
+        except RuntimeError as e:
+            last_err = e
+
+    raise RuntimeError(
+        "YouTube requires authentication for this video.\n\n"
+        "Fix: export your YouTube cookies as 'cookies.txt' using the\n"
+        "'Get cookies.txt LOCALLY' browser extension, then browse to it\n"
+        "using the Cookies File field, or place it in your home folder (~/)."
+    ) from last_err
 
 
 def find_caption_lang(info, lang=None):
@@ -127,7 +180,7 @@ def get_available_languages(info):
     return langs
 
 
-def download_video_and_subs(url, tmpdir, lang, is_auto):
+def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None):
     """Download video and subtitle file. Returns (video_path, srt_path).
 
     Downloads video first, then attempts subtitles separately so a 429
@@ -137,10 +190,34 @@ def download_video_and_subs(url, tmpdir, lang, is_auto):
 
     ffmpeg_dir = os.path.dirname(_ffmpeg())
 
+    def ytdlp_run(args):
+        """Run yt-dlp, using cookies_path if provided, else trying anonymous clients."""
+        base = [_ytdlp(), "--ffmpeg-location", ffmpeg_dir]
+
+        # User-provided cookies take priority
+        if cookies_path and os.path.isfile(cookies_path):
+            run(base + ["--cookies", cookies_path] + args)
+            return
+
+        clients = ["android", "ios", "tv", "mweb", "web"]
+        last_err = None
+        for client in clients:
+            try:
+                run(base + ["--extractor-args", f"youtube:player_client={client}"] + args)
+                return
+            except RuntimeError as e:
+                last_err = e
+                if not any(p in str(e) for p in _BOT_PHRASES):
+                    raise
+        # Auto-detected cookies.txt as last resort
+        cookie_args = _cookie_args()
+        if cookie_args:
+            run(base + cookie_args + args)
+            return
+        raise last_err
+
     # Download video first (no subs)
-    run([
-        _ytdlp(),
-        "--ffmpeg-location", ffmpeg_dir,
+    ytdlp_run([
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
         "--no-write-subs",
@@ -151,9 +228,7 @@ def download_video_and_subs(url, tmpdir, lang, is_auto):
     # Now download subs separately — if 429, retry with native lang
     sub_flag = "--write-auto-subs" if is_auto else "--write-subs"
     try:
-        run([
-            _ytdlp(),
-            "--ffmpeg-location", ffmpeg_dir,
+        ytdlp_run([
             "--skip-download",
             sub_flag,
             "--sub-langs", lang,
@@ -329,7 +404,7 @@ def extract_cards(video_path, entries, output_dir, progress_callback=None):
             progress_callback(i, total, text)
 
 
-def process_video(url, output_dir, lang=None, progress_callback=None):
+def process_video(url, output_dir, lang=None, progress_callback=None, cookies_path=None):
     """Full pipeline: download, parse captions, extract cards.
 
     progress_callback(current, total, message) is called at each stage.
@@ -340,7 +415,7 @@ def process_video(url, output_dir, lang=None, progress_callback=None):
             progress_callback(current, total, msg)
 
     update(0, 0, "Fetching video info...")
-    info = get_video_info(url)
+    info = get_video_info(url, cookies_path=cookies_path)
     title = info.get("title", "Unknown")
 
     update(0, 0, f"Title: {title}")
@@ -351,7 +426,7 @@ def process_video(url, output_dir, lang=None, progress_callback=None):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         update(0, 0, "Downloading video and subtitles...")
-        video_path, srt_path = download_video_and_subs(url, tmpdir, lang_code, is_auto)
+        video_path, srt_path = download_video_and_subs(url, tmpdir, lang_code, is_auto, cookies_path=cookies_path)
 
         update(0, 0, "Parsing captions...")
         entries = parse_srt(srt_path)
