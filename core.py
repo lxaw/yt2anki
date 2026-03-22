@@ -3,8 +3,66 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+
+
+def _find_bin(name):
+    """Find a binary by name, searching PATH and many common locations.
+
+    macOS apps (pywebview, PyInstaller bundles) often have a stripped-down PATH,
+    so we search aggressively.
+    """
+    # Build an extended PATH that includes common install locations
+    home = os.path.expanduser("~")
+    extra_dirs = [
+        os.path.join(home, ".pyenv", "shims"),
+        os.path.join(home, ".local", "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+    ]
+    # Also scan all pyenv version bin dirs
+    pyenv_versions = os.path.join(home, ".pyenv", "versions")
+    if os.path.isdir(pyenv_versions):
+        for ver in os.listdir(pyenv_versions):
+            extra_dirs.append(os.path.join(pyenv_versions, ver, "bin"))
+    # Also scan ~/Library/Python/*/bin (pip --user installs)
+    lib_python = os.path.join(home, "Library", "Python")
+    if os.path.isdir(lib_python):
+        for ver in os.listdir(lib_python):
+            extra_dirs.append(os.path.join(lib_python, ver, "bin"))
+
+    # Try shutil.which with extended PATH
+    original_path = os.environ.get("PATH", "")
+    extended_path = original_path + ":" + ":".join(extra_dirs)
+    result = shutil.which(name, path=extended_path)
+    if result:
+        return result
+
+    # Direct file check as last resort
+    for d in extra_dirs:
+        candidate = os.path.join(d, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return name  # fall back to bare name
+
+
+def _get_bin(name, _cache={}):
+    """Lazy-cached binary lookup."""
+    if name not in _cache:
+        _cache[name] = _find_bin(name)
+    return _cache[name]
+
+
+def _ytdlp():
+    return _get_bin("yt-dlp")
+
+
+def _ffmpeg():
+    return _get_bin("ffmpeg")
 
 
 def run(cmd, **kwargs):
@@ -17,7 +75,7 @@ def run(cmd, **kwargs):
 
 def get_video_info(url):
     """Fetch video metadata via yt-dlp."""
-    out = run(["yt-dlp", "--dump-json", "--no-download", url])
+    out = run([_ytdlp(), "--dump-json", "--no-download", url])
     return json.loads(out)
 
 
@@ -77,9 +135,12 @@ def download_video_and_subs(url, tmpdir, lang, is_auto):
     """
     video_template = os.path.join(tmpdir, "video.%(ext)s")
 
+    ffmpeg_dir = os.path.dirname(_ffmpeg())
+
     # Download video first (no subs)
     run([
-        "yt-dlp",
+        _ytdlp(),
+        "--ffmpeg-location", ffmpeg_dir,
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
         "--no-write-subs",
@@ -91,7 +152,8 @@ def download_video_and_subs(url, tmpdir, lang, is_auto):
     sub_flag = "--write-auto-subs" if is_auto else "--write-subs"
     try:
         run([
-            "yt-dlp",
+            _ytdlp(),
+            "--ffmpeg-location", ffmpeg_dir,
             "--skip-download",
             sub_flag,
             "--sub-langs", lang,
@@ -237,7 +299,7 @@ def extract_cards(video_path, entries, output_dir, progress_callback=None):
         # Audio clip
         audio_path = os.path.join(card_dir, "audio.mp3")
         subprocess.run([
-            "ffmpeg", "-y",
+            _ffmpeg(), "-y",
             "-ss", f"{fast_seek:.3f}",
             "-i", video_path,
             "-ss", f"{precise_offset:.3f}",
@@ -249,7 +311,7 @@ def extract_cards(video_path, entries, output_dir, progress_callback=None):
         # Screenshot
         image_path = os.path.join(card_dir, "frame.jpg")
         subprocess.run([
-            "ffmpeg", "-y",
+            _ffmpeg(), "-y",
             "-ss", f"{fast_seek:.3f}",
             "-i", video_path,
             "-ss", f"{precise_offset:.3f}",

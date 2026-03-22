@@ -19,10 +19,7 @@ dist/
 output/*
 
 # But keep one example card
-!output/card_009/
-!output/card_009/audio.mp3
-!output/card_009/frame.jpg
-!output/card_009/text.txt
-
-# Keep metadata optional (comment out if not needed)
-!output/metadata.json
+!output/card_008/
+!output/card_008/audio.mp3
+!output/card_008/frame.jpg
+!output/card_008/text.txt

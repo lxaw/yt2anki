@@ -1,96 +1,74 @@
 # YouTube to Flashcard
 
-Turn any captioned YouTube video into study-ready flashcard assets.
+Turn any captioned YouTube video into study-ready flashcard assets — one folder per caption line, each containing an audio clip, a video frame, and the subtitle text.
 
-This app downloads a video, pulls captions, and creates one folder per caption segment with:
-- `audio.mp3` (the spoken line)
-- `frame.jpg` (a screenshot from that exact moment)
-- `text.txt` (the caption text)
+![YouTube to Flashcard app](example_screenshot.png)
 
-It includes:
-- A native desktop GUI (Python + pywebview)
-- A CLI for scripting and batch workflows
+## What It Does
 
-## App Example Screen (example_screen)
+1. Downloads a YouTube video via `yt-dlp`
+2. Extracts captions (manual or auto-generated)
+3. Splits the video into per-sentence segments
+4. Saves each segment as a **card** folder:
 
-![YouTube to Flashcard app screenshot](example_screenshot.png)
-
-## Real Output Example (card_009)
-
-Source video: https://www.youtube.com/watch?v=lwTqv3m1SSs
-
-### Image
-
-![Card 009 frame](output/card_009/frame.jpg)
-
-### Audio (playable)
-
-<audio controls preload="metadata">
-	<source src="output/card_009/audio.mp3" type="audio/mpeg">
-	Your browser does not support the audio element. <a href="output/card_009/audio.mp3">Open the audio file</a>.
-</audio>
-
-### Text
-
-```text
-abgestaubt wieder, ne? haben hier glaube
+```
+card_001/
+  audio.mp3   — the spoken line
+  frame.jpg   — screenshot from that moment
+  text.txt    — the caption text
 ```
 
-## How It Works
+## Example Output
 
-1. Fetch video metadata with `yt-dlp`
-2. Select caption language (manual subtitles preferred, auto captions fallback)
-3. Download video and subtitles
-4. Parse and clean SRT caption lines
-5. Extract an audio clip and frame per caption segment using `ffmpeg`
-6. Save card folders and write `metadata.json`
+Source: [Resident Evil Requiem #09](https://www.youtube.com/watch?v=lwTqv3m1SSs) (German auto-captions)
+
+**Frame:**
+
+![Card 008 frame](output/card_008/frame.jpg)
+
+**Text:**
+```
+gerade glaube ich hier ein bisschen
+```
+
+**Audio:** [Listen to audio clip](output/card_008/audio.mp3)
 
 ## Requirements
 
 - Python 3.10+
-- `yt-dlp` available on your PATH
-- `ffmpeg` available on your PATH
-- Python packages:
-	- `pywebview`
-	- `psutil` (optional but recommended for robust cancellation)
+- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on your PATH
+- [`ffmpeg`](https://ffmpeg.org/) on your PATH
 
 ## Quick Start
 
-### 1) Install dependencies
+### Install Python dependencies
 
 ```bash
 pip install pywebview psutil
 ```
 
-Install `yt-dlp` and `ffmpeg` with your preferred package manager.
-
-### 2) Run the desktop app
+### Run the desktop app
 
 ```bash
 python app.py
 ```
 
-### 3) Or run the CLI
+### Or use the CLI
 
 ```bash
-python youtube_to_cards.py "https://www.youtube.com/watch?v=VIDEO_ID" -o output -l de
+python youtube_to_cards.py "https://www.youtube.com/watch?v=VIDEO_ID"
+python youtube_to_cards.py "https://www.youtube.com/watch?v=VIDEO_ID" -o my_cards -l de
 ```
 
-## Output Structure
+## Options
 
-```text
-output/
-	metadata.json
-	card_001/
-		audio.mp3
-		frame.jpg
-		text.txt
-	card_002/
-		...
-```
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-o`, `--output` | Output directory | `output` |
+| `-l`, `--lang` | Caption language code (e.g. `en`, `de`, `ja`) | auto-detect |
 
 ## Notes
 
-- If caption download is rate-limited by YouTube, retry later or pass an explicit language code.
-- Automatic captions are de-duplicated to reduce repeated fragments.
-- The included `output/card_009` files are a generated sample for previewing result quality.
+- Only works with videos that have captions (manual or auto-generated). Videos without captions will show an error.
+- YouTube may rate-limit subtitle downloads — if you get a 429 error, wait a moment and retry, or specify the video's native language with `-l`.
+- Auto-generated captions are automatically de-duplicated to remove repeated fragments.
