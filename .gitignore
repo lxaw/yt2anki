@@ -15,7 +15,12 @@ dist/
 # App bundles
 *.app
 
+# Cookies (sensitive)
+cookies.txt
+*.cookies
+
 # Output folder (ignore everything by default)
+output/metadata.json
 output/*
 
 # But keep one example card

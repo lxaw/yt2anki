@@ -1,6 +1,6 @@
 # YouTube to Flashcard
 
-Turn any captioned YouTube video into study-ready flashcard assets — one folder per caption line, each containing an audio clip, a video frame, and the subtitle text.
+Turn any captioned YouTube video into study-ready flashcard assets — one folder per caption line, each containing an audio clip, a video frame, and the subtitle text. Then upload directly to Anki.
 
 ![YouTube to Flashcard app](example_screenshot.png)
 
@@ -17,6 +17,18 @@ card_001/
   frame.jpg   — screenshot from that moment
   text.txt    — the caption text
 ```
+
+5. **Anki Upload** — search through generated cards, select sentences, and upload to Anki with:
+   - Sentence + audio + screenshot
+   - Dictionary lookups (German or Japanese)
+   - Word-level TTS audio
+
+## Supported Languages
+
+| Language | EN Dictionary | Native Dictionary | TTS Voice |
+|----------|--------------|-------------------|-----------|
+| German | dict.cc | DWDS / Wiktionary | Anna (macOS) |
+| Japanese | Jisho.org | Kotobank | Kyoko (macOS) |
 
 ## Example Output
 
@@ -36,16 +48,24 @@ gerade glaube ich hier ein bisschen
 ## Requirements
 
 - Python 3.10+
-- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on your PATH
-- [`ffmpeg`](https://ffmpeg.org/) on your PATH
+- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp)
+- [`ffmpeg`](https://ffmpeg.org/)
+- [Node.js](https://nodejs.org/) (required for YouTube's JS challenge solver)
+- [Anki](https://apps.ankiweb.net/) + [AnkiConnect](https://ankiweb.net/shared/info/2055492159) (for Anki upload feature)
 
-## Quick Start
+### macOS (Homebrew)
 
-### Install Python dependencies
+```bash
+brew install yt-dlp ffmpeg node
+```
+
+### Python dependencies
 
 ```bash
 pip install pywebview psutil
 ```
+
+## Quick Start
 
 ### Run the desktop app
 
@@ -70,5 +90,6 @@ python youtube_to_cards.py "https://www.youtube.com/watch?v=VIDEO_ID" -o my_card
 ## Notes
 
 - Only works with videos that have captions (manual or auto-generated). Videos without captions will show an error.
-- YouTube may rate-limit subtitle downloads — if you get a 429 error, wait a moment and retry, or specify the video's native language with `-l`.
+- If YouTube blocks the download with a bot check, make sure you are logged into YouTube in Chrome. The app automatically uses Chrome cookies for authentication.
+- As a fallback, you can export cookies via the "Get cookies.txt LOCALLY" browser extension and load them in the app.
 - Auto-generated captions are automatically de-duplicated to remove repeated fragments.

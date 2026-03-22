@@ -34,20 +34,29 @@ def _find_bin(name):
         for ver in os.listdir(lib_python):
             extra_dirs.append(os.path.join(lib_python, ver, "bin"))
 
+    # Prefer actual binaries over pyenv shims (shims don't work outside a shell)
+    # Direct file check first
+    for d in extra_dirs:
+        candidate = os.path.join(d, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            # Skip shims — they require pyenv shell init
+            if "shims" not in candidate:
+                return candidate
+
     # Try shutil.which with extended PATH
     original_path = os.environ.get("PATH", "")
     extended_path = original_path + ":" + ":".join(extra_dirs)
     result = shutil.which(name, path=extended_path)
-    if result:
+    if result and "shims" not in result:
         return result
 
-    # Direct file check as last resort
+    # Fall back to shim if nothing else found
     for d in extra_dirs:
         candidate = os.path.join(d, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 
-    return name  # fall back to bare name
+    return name
 
 
 def _get_bin(name, _cache={}):
@@ -65,70 +74,120 @@ def _ffmpeg():
     return _get_bin("ffmpeg")
 
 
-def run(cmd, **kwargs):
-    """Run a subprocess command and return its output."""
-    result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{result.stderr}")
-    return result.stdout.strip()
+def run(cmd, progress_callback=None, **kwargs):
+    """Run a subprocess command and return its output.
+
+    If progress_callback is provided, streams stderr lines to it in real time
+    (useful for yt-dlp download progress).
+    """
+    if progress_callback is None:
+        result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+        if result.returncode != 0:
+            raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{result.stderr}")
+        return result.stdout.strip()
+
+    # Streaming mode: read stderr live for progress updates
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, **kwargs
+    )
+    stderr_lines = []
+    for line in proc.stderr:
+        line = line.rstrip()
+        stderr_lines.append(line)
+        # yt-dlp progress lines look like: [download]  45.3% of 123.45MiB at 2.34MiB/s ETA 00:30
+        if line.startswith("[download]") or line.startswith("[youtube]"):
+            progress_callback(0, 0, line)
+    stdout = proc.stdout.read()
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n" + "\n".join(stderr_lines))
+    return stdout.strip()
 
 
-def _cookie_args():
-    """Return --cookies args if a cookies.txt file exists next to this module."""
-    # Look for cookies.txt in the same directory as this file (or CWD)
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"),
-        os.path.join(os.getcwd(), "cookies.txt"),
-        os.path.expanduser("~/cookies.txt"),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return ["--cookies", path]
+def _node_path():
+    """Find Node.js binary."""
+    for candidate in ["/opt/homebrew/bin/node", "/usr/local/bin/node"]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    result = shutil.which("node")
+    return result or None
+
+
+def _ejs_args():
+    """Args to enable YouTube JS challenge solving via Node.js + remote EJS script."""
+    node = _node_path()
+    if node:
+        return [
+            "--js-runtimes", f"node:{node}",
+            "--remote-components", "ejs:github",
+        ]
     return []
 
 
-_BOT_PHRASES = ("Sign in to confirm", "bot", "Login required", "cookies")
+def _cookie_args(cookies_path=None):
+    """Return cookie args. Tries cookies.txt file first, then Chrome browser."""
+    # User-provided file
+    if cookies_path and os.path.isfile(cookies_path):
+        return ["--cookies", cookies_path]
+    # Auto-detected cookies.txt
+    for path in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"),
+        os.path.join(os.getcwd(), "cookies.txt"),
+        os.path.expanduser("~/cookies.txt"),
+    ]:
+        if os.path.isfile(path):
+            return ["--cookies", path]
+    # Chrome browser cookies (works on macOS without Full Disk Access)
+    chrome = "/Applications/Google Chrome.app"
+    if os.path.isdir(chrome):
+        return ["--cookies-from-browser", "chrome"]
+    # Firefox
+    if shutil.which("firefox") or os.path.isdir("/Applications/Firefox.app"):
+        return ["--cookies-from-browser", "firefox"]
+    return []
+
+
+_BOT_PHRASES = ("Sign in to confirm", "bot", "Login required", "n challenge")
 
 
 def get_video_info(url, cookies_path=None):
     """Fetch video metadata via yt-dlp.
 
-    Tries multiple YouTube clients to bypass bot detection without needing login.
-    Falls back to cookies_path (or auto-detected cookies.txt) if all anonymous attempts fail.
+    Uses browser cookies + Node.js EJS challenge solver to bypass YouTube bot detection.
     """
     ytdlp = _ytdlp()
     base = [ytdlp, "--dump-json", "--no-download"]
+    ejs = _ejs_args()
+    cookies = _cookie_args(cookies_path)
 
-    # If user provided a cookies file, use it directly and skip anonymous attempts
-    if cookies_path and os.path.isfile(cookies_path):
-        out = run(base + ["--cookies", cookies_path, url])
-        return json.loads(out)
-
-    # Try clients that bypass bot detection without cookies (in order of reliability)
-    clients = ["android", "ios", "tv", "mweb", "web"]
+    # Try with cookies + EJS solver (most reliable)
     last_err = None
-    for client in clients:
-        try:
-            out = run(base + ["--extractor-args", f"youtube:player_client={client}", url])
-            return json.loads(out)
-        except RuntimeError as e:
-            last_err = e
-            continue
+    try:
+        out = run(base + ejs + cookies + [url])
+        return json.loads(out)
+    except RuntimeError as e:
+        last_err = e
 
-    # All anonymous clients failed — try auto-detected cookies.txt
-    cookie_args = _cookie_args()
-    if cookie_args:
-        try:
-            out = run(base + cookie_args + [url])
-            return json.loads(out)
-        except RuntimeError as e:
-            last_err = e
+    # Fallback: try without EJS (some videos don't need it)
+    try:
+        out = run(base + cookies + [url])
+        return json.loads(out)
+    except RuntimeError as e:
+        last_err = e
+
+    # Last resort: no cookies at all
+    try:
+        out = run(base + ejs + [url])
+        return json.loads(out)
+    except RuntimeError as e:
+        last_err = e
 
     raise RuntimeError(
-        "YouTube requires authentication for this video.\n\n"
-        "Fix: export your YouTube cookies as 'cookies.txt' using the\n"
-        "'Get cookies.txt LOCALLY' browser extension, then browse to it\n"
-        "using the Cookies File field, or place it in your home folder (~/)."
+        "YouTube is blocking this download.\n\n"
+        "Make sure you are logged into YouTube in Chrome, then try again.\n"
+        "If still blocked, export cookies.txt using the 'Get cookies.txt LOCALLY'\n"
+        "Chrome extension and load it via the Cookies File field."
     ) from last_err
 
 
@@ -180,50 +239,47 @@ def get_available_languages(info):
     return langs
 
 
-def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None):
-    """Download video and subtitle file. Returns (video_path, srt_path).
-
-    Downloads video first, then attempts subtitles separately so a 429
-    on subs doesn't block the whole download.
-    """
+def download_video_and_subs(url, tmpdir, lang, is_auto, cookies_path=None, progress_callback=None):
+    """Download video and subtitle file. Returns (video_path, srt_path)."""
     video_template = os.path.join(tmpdir, "video.%(ext)s")
-
     ffmpeg_dir = os.path.dirname(_ffmpeg())
 
-    def ytdlp_run(args):
-        """Run yt-dlp, using cookies_path if provided, else trying anonymous clients."""
+    def ytdlp_run(args, stream_progress=False):
+        """Run yt-dlp with cookies + EJS solver for reliable YouTube access."""
         base = [_ytdlp(), "--ffmpeg-location", ffmpeg_dir]
+        ejs = _ejs_args()
+        cookies = _cookie_args(cookies_path)
+        cb = progress_callback if stream_progress else None
 
-        # User-provided cookies take priority
-        if cookies_path and os.path.isfile(cookies_path):
-            run(base + ["--cookies", cookies_path] + args)
-            return
-
-        clients = ["android", "ios", "tv", "mweb", "web"]
         last_err = None
-        for client in clients:
-            try:
-                run(base + ["--extractor-args", f"youtube:player_client={client}"] + args)
-                return
-            except RuntimeError as e:
-                last_err = e
-                if not any(p in str(e) for p in _BOT_PHRASES):
-                    raise
-        # Auto-detected cookies.txt as last resort
-        cookie_args = _cookie_args()
-        if cookie_args:
-            run(base + cookie_args + args)
+        try:
+            run(base + ejs + cookies + args, progress_callback=cb)
             return
+        except RuntimeError as e:
+            last_err = e
+
+        try:
+            run(base + cookies + args, progress_callback=cb)
+            return
+        except RuntimeError as e:
+            last_err = e
+
+        try:
+            run(base + ejs + args, progress_callback=cb)
+            return
+        except RuntimeError as e:
+            last_err = e
+
         raise last_err
 
-    # Download video first (no subs)
+    # Download video first (no subs) — stream progress to UI
     ytdlp_run([
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
         "--no-write-subs",
         "-o", video_template,
         url,
-    ])
+    ], stream_progress=True)
 
     # Now download subs separately — if 429, retry with native lang
     sub_flag = "--write-auto-subs" if is_auto else "--write-subs"
@@ -426,7 +482,7 @@ def process_video(url, output_dir, lang=None, progress_callback=None, cookies_pa
 
     with tempfile.TemporaryDirectory() as tmpdir:
         update(0, 0, "Downloading video and subtitles...")
-        video_path, srt_path = download_video_and_subs(url, tmpdir, lang_code, is_auto, cookies_path=cookies_path)
+        video_path, srt_path = download_video_and_subs(url, tmpdir, lang_code, is_auto, cookies_path=cookies_path, progress_callback=update)
 
         update(0, 0, "Parsing captions...")
         entries = parse_srt(srt_path)
